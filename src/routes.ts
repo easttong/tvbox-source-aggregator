@@ -1362,6 +1362,14 @@ export function createApp(deps: AppDeps): Hono {
     const parseSet = new Set(blacklist.parses);
     const liveSet = new Set(blacklist.lives);
 
+    // 预编译正则规则用于标记 regexBlocked
+    const activeRegexRules = blacklist.regexRules.filter(r => r.enabled);
+    const compiledRegex: Array<{ re: RegExp; field: string }> = [];
+    for (const rule of activeRegexRules) {
+      try { compiledRegex.push({ re: new RegExp(rule.pattern, 'i'), field: rule.field }); } catch { /* skip */ }
+    }
+    const overrideSet = new Set(blacklist.regexBlockOverrides);
+
     // Build sites with fingerprint + blocked status + group
     const sites = [];
     for (const site of parsed.sites || []) {
@@ -1373,7 +1381,16 @@ export function createApp(deps: AppDeps): Hono {
       } else if (api.startsWith('http')) {
         try { group = '远程: ' + new URL(api).hostname; } catch { group = '远程源'; }
       }
-      sites.push({ ...site, fingerprint: fp, blocked: siteSet.has(fp), group });
+      const fpBlocked = siteSet.has(fp);
+      let regexBlocked = false;
+      let regexPattern = '';
+      if (!fpBlocked && !overrideSet.has(site.name || '')) {
+        for (const { re, field } of compiledRegex) {
+          const value = String((site as unknown as Record<string, unknown>)[field] || '');
+          if (re.test(value)) { regexBlocked = true; regexPattern = re.source; break; }
+        }
+      }
+      sites.push({ ...site, fingerprint: fp, blocked: fpBlocked || regexBlocked, regexBlocked, regexPattern, group });
     }
 
     const parses = (parsed.parses || []).map(p => ({
